@@ -4,7 +4,6 @@ import {
   getDoc, 
   setDoc, 
   updateDoc, 
-  serverTimestamp, 
   increment 
 } from 'firebase/firestore';
 import { db, OperationType, handleFirestoreError } from './firebase';
@@ -32,46 +31,63 @@ export interface DeviceTelemetry {
   referrer: string;
 }
 
-// Generate persistent canvas & client hardware fingerprint
+// Generate persistent WebGL, canvas & client hardware fingerprint
 export function generateClientFingerprint(): string {
   try {
+    let glInfo = '';
+    try {
+      const glCanvas = document.createElement('canvas');
+      const gl = glCanvas.getContext('webgl') || glCanvas.getContext('experimental-webgl');
+      if (gl) {
+        const debugInfo = (gl as any).getExtension('WEBGL_debug_renderer_info');
+        if (debugInfo) {
+          glInfo = (gl as any).getParameter(debugInfo.UNMASKED_RENDERER_WEBGL) || '';
+        }
+      }
+    } catch {
+      //
+    }
+
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
-    canvas.width = 200;
-    canvas.height = 50;
+    canvas.width = 240;
+    canvas.height = 60;
     
     let canvasData = '';
     if (ctx) {
       ctx.textBaseline = 'top';
       ctx.font = "14px 'Arial', sans-serif";
       ctx.fillStyle = '#050505';
-      ctx.fillRect(0, 0, 200, 50);
+      ctx.fillRect(0, 0, 240, 60);
       ctx.fillStyle = '#EDEDED';
       ctx.fillText('DK-X-SYSTEM-ID-9923', 4, 17);
+      ctx.fillStyle = 'rgba(100, 200, 255, 0.5)';
+      ctx.fillText('SECURITY-DEVICE-LOCK-V2', 4, 35);
       canvasData = canvas.toDataURL();
     }
 
     const nav = window.navigator as any;
     const rawTokens = [
-      canvasData.slice(30, 90),
+      canvasData.slice(30, 110),
+      glInfo,
       nav.userAgent || '',
-      nav.language || '',
+      nav.platform || '',
       nav.hardwareConcurrency || 'x',
       nav.deviceMemory || 'y',
-      screen.width + 'x' + screen.height + 'x' + screen.colorDepth,
+      screen.width + 'x' + screen.height + 'x' + screen.colorDepth + 'x' + (window.devicePixelRatio || 1),
       Intl.DateTimeFormat().resolvedOptions().timeZone || ''
     ].join('###');
 
-    // Simple FNV-1a 32-bit to hex hash
+    // FNV-1a 32-bit to hex hash
     let hash = 2166136261;
     for (let i = 0; i < rawTokens.length; i++) {
       hash ^= rawTokens.charCodeAt(i);
       hash = Math.imul(hash, 16777619);
     }
     const hex = (hash >>> 0).toString(16).padStart(8, '0');
-    return `fp_${hex}_${screen.width}x${screen.height}`;
+    return `fp_${hex}`;
   } catch {
-    return `fp_fallback_${Date.now()}`;
+    return `fp_dev_${screen.width}x${screen.height}`;
   }
 }
 
@@ -157,7 +173,6 @@ export async function fetchClientTelemetry(): Promise<DeviceTelemetry> {
   let region = 'Unknown';
   let isp = 'Unknown';
 
-  // Primary attempt: ipapi.co or freeipapi
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 4000);
@@ -172,7 +187,6 @@ export async function fetchClientTelemetry(): Promise<DeviceTelemetry> {
       isp = data.org || 'Unknown';
     }
   } catch {
-    // Secondary fallback attempt: ipify
     try {
       const res = await fetch('https://api.ipify.org?format=json');
       if (res.ok) {
@@ -230,7 +244,7 @@ export async function fetchClientTelemetry(): Promise<DeviceTelemetry> {
   };
 }
 
-// Convert IP to safe Firestore Document ID (replace dots/colons)
+// Convert ID to safe Firestore Document ID
 export function sanitizeDocId(id: string): string {
   return id.replace(/[^a-zA-Z0-9_\-\.]/g, '_').slice(0, 100);
 }
@@ -238,105 +252,85 @@ export function sanitizeDocId(id: string): string {
 // Record or update visitor in Firestore
 export async function recordVisitorTelemetry(telemetry: DeviceTelemetry): Promise<void> {
   const visitorId = sanitizeDocId(`vis_${telemetry.ip}`);
-  const path = `visitors/${visitorId}`;
 
   try {
     const visitorRef = doc(db, 'visitors', visitorId);
-    const existingSnap = await getDoc(visitorRef);
-
     const now = new Date().toISOString();
 
-    if (existingSnap.exists()) {
-      // Update existing record
-      await updateDoc(visitorRef, {
-        visitCount: increment(1),
-        lastVisitedAt: now,
-      });
-    } else {
-      // Create new record
-      await setDoc(visitorRef, {
-        ip: telemetry.ip,
-        fingerprint: telemetry.fingerprint,
-        country: telemetry.country,
-        city: telemetry.city,
-        region: telemetry.region,
-        isp: telemetry.isp,
-        deviceType: telemetry.deviceType,
-        deviceName: telemetry.deviceName,
-        os: telemetry.os,
-        browser: telemetry.browser,
-        screenResolution: telemetry.screenResolution,
-        userAgent: telemetry.userAgent,
-        hasSubmittedMessage: false,
-        visitCount: 1,
-        createdAt: now,
-        lastVisitedAt: now
-      });
+    const dataToSave: Record<string, any> = {
+      ip: telemetry.ip,
+      fingerprint: telemetry.fingerprint,
+      country: telemetry.country || 'Unknown',
+      city: telemetry.city || 'Unknown',
+      region: telemetry.region || 'Unknown',
+      isp: telemetry.isp || 'Unknown',
+      deviceType: telemetry.deviceType || 'Desktop',
+      deviceName: telemetry.deviceName || 'Standard',
+      os: telemetry.os || 'Unknown',
+      browser: telemetry.browser || 'Unknown',
+      screenResolution: telemetry.screenResolution || 'Unknown',
+      userAgent: (telemetry.userAgent || '').slice(0, 500),
+      createdAt: now,
+      lastVisitedAt: now
+    };
+
+    try {
+      const snap = await getDoc(visitorRef);
+      if (snap.exists()) {
+        await updateDoc(visitorRef, {
+          visitCount: increment(1),
+          lastVisitedAt: now
+        });
+        return;
+      }
+    } catch {
+      // If getDoc not existing, proceed to setDoc
     }
+
+    dataToSave.hasSubmittedMessage = false;
+    dataToSave.visitCount = 1;
+    await setDoc(visitorRef, dataToSave);
   } catch (error) {
     console.warn('Could not record visitor telemetry:', error);
   }
 }
 
-// Check if this visitor is locked from submitting (already sent a message)
+// Check if this visitor is locked from submitting (SPECIFIC TO THIS DEVICE FINGERPRINT ONLY)
+// Note: We do NOT lock solely by IP so other devices on the same Wi-Fi / network are not blocked!
 export async function checkSubmissionLock(ip: string, fingerprint: string): Promise<{
   isLocked: boolean;
   lockedReason?: string;
   lockedAt?: string;
 }> {
-  // Check localStorage first
+  // 1. Check local storage on this specific device
   const localLock = localStorage.getItem('dkx_msg_lock');
   if (localLock) {
     try {
       const parsed = JSON.parse(localLock);
-      return { isLocked: true, lockedReason: 'Local storage record', lockedAt: parsed.lockedAt };
+      return { isLocked: true, lockedReason: 'Local device record', lockedAt: parsed.lockedAt };
     } catch {
       // continue to remote check
     }
   }
 
-  // Check remote Firestore locks by IP
-  const ipLockId = sanitizeDocId(`lock_ip_${ip}`);
-  try {
-    const ipDoc = await getDoc(doc(db, 'locks', ipLockId));
-    if (ipDoc.exists()) {
-      const data = ipDoc.data();
-      localStorage.setItem('dkx_msg_lock', JSON.stringify({ ip, lockedAt: data.createdAt }));
-      return { isLocked: true, lockedReason: 'IP match', lockedAt: data.createdAt };
-    }
-  } catch (e) {
-    // If permission or offline, handle gracefully
-    console.warn('Check IP lock error', e);
-  }
-
-  // Check remote Firestore locks by Fingerprint
+  // 2. Check remote Firestore lock by DEVICE FINGERPRINT
+  // Only blocks if THIS hardware/canvas fingerprint previously sent a message!
   const fpLockId = sanitizeDocId(`lock_fp_${fingerprint}`);
   try {
     const fpDoc = await getDoc(doc(db, 'locks', fpLockId));
     if (fpDoc.exists()) {
       const data = fpDoc.data();
-      localStorage.setItem('dkx_msg_lock', JSON.stringify({ ip, lockedAt: data.createdAt }));
+      localStorage.setItem('dkx_msg_lock', JSON.stringify({ fingerprint, lockedAt: data.createdAt }));
       return { isLocked: true, lockedReason: 'Device fingerprint match', lockedAt: data.createdAt };
     }
   } catch (e) {
     console.warn('Check FP lock error', e);
   }
 
-  // Check visitor record
-  const visitorId = sanitizeDocId(`vis_${ip}`);
-  try {
-    const visDoc = await getDoc(doc(db, 'visitors', visitorId));
-    if (visDoc.exists() && visDoc.data().hasSubmittedMessage) {
-      return { isLocked: true, lockedReason: 'Visitor record submitted' };
-    }
-  } catch {
-    //
-  }
-
   return { isLocked: false };
 }
 
-// Submit single message and enforce strict locks
+// Submit single message and enforce strict device lock
 export async function submitOneTimeMessage(payload: {
   name: string;
   email: string;
@@ -348,10 +342,10 @@ export async function submitOneTimeMessage(payload: {
   const now = new Date().toISOString();
   const messageId = `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
-  // 1. Double check lock before writing
+  // Double check lock for THIS device before writing
   const lockStatus = await checkSubmissionLock(telemetry.ip, telemetry.fingerprint);
   if (lockStatus.isLocked) {
-    throw new Error('আপনি ইতিমধ্যে একটি বার্তা পাঠিয়েছেন। প্রতিটি ডিভাইস ও আইপি থেকে কেবল একবারই বার্তা পাঠানো অনুমোদিত।');
+    throw new Error('আপনি ইতিমধ্যে একটি বার্তা পাঠিয়েছেন। প্রতিটি ডিভাইস থেকে কেবল একবারই বার্তা পাঠানো অনুমোদিত।');
   }
 
   const messageDoc: Record<string, any> = {
@@ -372,25 +366,24 @@ export async function submitOneTimeMessage(payload: {
 
   const pathForWrite = `messages/${messageId}`;
   try {
-    // Write message
+    // Write message to Firestore
     await setDoc(doc(db, 'messages', messageId), messageDoc);
+    console.log('Message written successfully to Firestore:', messageId);
   } catch (error) {
+    console.error('Failed writing message to Firestore:', error);
     handleFirestoreError(error, OperationType.CREATE, pathForWrite);
   }
 
-  // Create submission locks for IP and Fingerprint
+  // Backup to localStorage for device resiliency
   try {
-    const ipLockId = sanitizeDocId(`lock_ip_${telemetry.ip}`);
-    await setDoc(doc(db, 'locks', ipLockId), {
-      identifier: `ip_${telemetry.ip}`,
-      messageId: messageId,
-      ip: telemetry.ip,
-      createdAt: now
-    });
-  } catch (e) {
-    console.warn('Could not write IP lock:', e);
+    const localStore = JSON.parse(localStorage.getItem('dkx_all_messages') || '[]');
+    localStore.unshift({ id: messageId, ...messageDoc });
+    localStorage.setItem('dkx_all_messages', JSON.stringify(localStore));
+  } catch {
+    //
   }
 
+  // Create submission lock specifically for THIS DEVICE FINGERPRINT
   try {
     const fpLockId = sanitizeDocId(`lock_fp_${telemetry.fingerprint}`);
     await setDoc(doc(db, 'locks', fpLockId), {
@@ -403,22 +396,12 @@ export async function submitOneTimeMessage(payload: {
     console.warn('Could not write FP lock:', e);
   }
 
-  // Update visitor record to mark hasSubmittedMessage
-  try {
-    const visitorId = sanitizeDocId(`vis_${telemetry.ip}`);
-    await updateDoc(doc(db, 'visitors', visitorId), {
-      hasSubmittedMessage: true
-    });
-  } catch (e) {
-    console.warn('Could not update visitor submission flag:', e);
-  }
-
-  // Set localStorage backup lock
+  // Set localStorage backup lock for this browser
   localStorage.setItem('dkx_msg_lock', JSON.stringify({
-    ip: telemetry.ip,
+    fingerprint: telemetry.fingerprint,
     messageId,
     lockedAt: now
   }));
 
   return { success: true, messageId };
-}
+    }
