@@ -130,13 +130,13 @@ export const ContactSection: React.FC<ContactSectionProps> = ({ telemetry, onSub
                   {justSent ? 'বার্তা সফলভাবে পাঠানো হয়েছে' : 'বার্তা ইতিমধ্যে পাঠানো হয়েছে'}
                 </h3>
                 <p className="text-xs sm:text-sm text-neutral-400 leading-relaxed max-w-sm mx-auto">
-                  আপনার বার্তাটি ডাটাবেজে সংরক্ষিত রয়েছে। এই নেটওয়ার্ক ও ডিভাইস থেকে শুধুমাত্র একবারই মেসেজ পাঠানো অনুমোদিত।
+                  আপনার বার্তাটি ডাটাবেজে সংরক্ষিত রয়েছে। এই নির্দিষ্ট ডিভাইস থেকে ইতিমধ্যে একবার বার্তা পাঠানো হয়েছে।
                 </p>
               </div>
 
               <div className="p-3 bg-[#111111]/80 border border-white/5 rounded-xl text-[11px] font-mono text-neutral-400 inline-flex items-center gap-2">
                 <ShieldCheck className="w-3.5 h-3.5 text-neutral-300" />
-                <span>Single-Submission Protocol Active · IP Protected</span>
+                <span>Single-Submission Protocol Active · Device Signature Locked</span>
               </div>
             </div>
           ) : (
