@@ -104,13 +104,82 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onExit }) => {
     return () => unsubscribe();
   }, []);
 
+  const [serverError, setServerError] = useState<string | null>(null);
+
+  // Manual direct fetch function
+  const fetchDataDirectly = async () => {
+    setLoading(true);
+    setServerError(null);
+
+    try {
+      // 1. Fetch messages
+      const msgsSnap = await getDocs(collection(db, 'messages'));
+      const list: ContactMessage[] = [];
+      msgsSnap.forEach((d) => {
+        list.push({ id: d.id, ...(d.data() as any) });
+      });
+
+      // Merge any local backup messages
+      try {
+        const localMsgs = JSON.parse(localStorage.getItem('dkx_all_messages') || '[]');
+        for (const localM of localMsgs) {
+          if (!list.some(m => m.id === localM.id)) {
+            list.push(localM);
+          }
+        }
+      } catch {
+        //
+      }
+
+      list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      setMessages(list);
+    } catch (err: any) {
+      console.error('Direct messages fetch error:', err);
+      setServerError(`মেসেজ লোড এরর: ${err.message || 'Permission denied'}`);
+      // Fallback to local
+      try {
+        const localMsgs = JSON.parse(localStorage.getItem('dkx_all_messages') || '[]');
+        if (localMsgs.length > 0) setMessages(localMsgs);
+      } catch {
+        //
+      }
+    }
+
+    try {
+      // 2. Fetch visitors
+      const visSnap = await getDocs(collection(db, 'visitors'));
+      const vList: VisitorRecord[] = [];
+      visSnap.forEach((d) => {
+        vList.push({ id: d.id, ...(d.data() as any) });
+      });
+      vList.sort((a, b) => new Date(b.lastVisitedAt || b.createdAt).getTime() - new Date(a.lastVisitedAt || a.createdAt).getTime());
+      setVisitors(vList);
+    } catch (err: any) {
+      console.warn('Direct visitors fetch error:', err);
+    }
+
+    try {
+      // 3. Fetch locks
+      const lkSnap = await getDocs(collection(db, 'locks'));
+      const lkList: any[] = [];
+      lkSnap.forEach((d) => {
+        lkList.push({ id: d.id, ...(d.data() as any) });
+      });
+      setLocks(lkList);
+    } catch {
+      //
+    } finally {
+      setLoading(false);
+    }
+  };
+
   // Fetch real-time messages & visitors once authenticated
   useEffect(() => {
     if (!isAuthenticated) return;
 
-    setLoading(true);
+    fetchDataDirectly();
 
-    // Messages listener
+    // Messages real-time listener
     let unsubMessages = () => {};
     try {
       const q = query(collection(db, 'messages'));
@@ -119,19 +188,33 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onExit }) => {
         snapshot.forEach((d) => {
           list.push({ id: d.id, ...(d.data() as any) });
         });
-        // Sort descending by createdAt
+
+        // Merge local backup
+        try {
+          const localMsgs = JSON.parse(localStorage.getItem('dkx_all_messages') || '[]');
+          for (const localM of localMsgs) {
+            if (!list.some(m => m.id === localM.id)) {
+              list.push(localM);
+            }
+          }
+        } catch {
+          //
+        }
+
         list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
         setMessages(list);
         setLoading(false);
       }, (err) => {
         console.warn('Messages snapshot listener warning:', err.message);
+        setServerError(`রিয়েল-টাইম কানেকশন এরর: ${err.message}`);
         setLoading(false);
       });
-    } catch {
+    } catch (err: any) {
+      setServerError(err.message);
       setLoading(false);
     }
 
-    // Visitors listener
+    // Visitors real-time listener
     let unsubVisitors = () => {};
     try {
       const qVis = query(collection(db, 'visitors'));
@@ -142,14 +225,12 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onExit }) => {
         });
         list.sort((a, b) => new Date(b.lastVisitedAt || b.createdAt).getTime() - new Date(a.lastVisitedAt || a.createdAt).getTime());
         setVisitors(list);
-      }, (err) => {
-        console.warn('Visitors snapshot listener warning:', err.message);
-      });
+      }, () => {});
     } catch {
       //
     }
 
-    // Locks listener
+    // Locks real-time listener
     let unsubLocks = () => {};
     try {
       const qLocks = query(collection(db, 'locks'));
@@ -382,6 +463,15 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onExit }) => {
         {/* Admin Controls */}
         <div className="flex items-center gap-3">
           <button
+            onClick={fetchDataDirectly}
+            disabled={loading}
+            className="flex items-center gap-1.5 text-xs text-neutral-300 hover:text-white bg-white/5 border border-white/10 hover:bg-white/10 px-3 py-1.5 rounded-lg transition-colors cursor-pointer"
+            title="Reload latest data from Firestore"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+            <span>{loading ? 'লোড হচ্ছে...' : 'রিফ্রেশ'}</span>
+          </button>
+          <button
             onClick={handleLogout}
             className="text-xs text-neutral-400 hover:text-rose-400 transition-colors px-3 py-1.5 rounded-lg border border-white/10 hover:border-rose-500/30"
           >
@@ -392,6 +482,18 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onExit }) => {
 
       {/* Main Content Area */}
       <main className="flex-1 p-6 max-w-7xl w-full mx-auto">
+        {serverError && (
+          <div className="mb-6 p-4 bg-rose-500/10 border border-rose-500/20 rounded-xl text-xs text-rose-300 flex items-center justify-between">
+            <span>{serverError}</span>
+            <button
+              onClick={fetchDataDirectly}
+              className="px-2 py-1 bg-rose-500/20 hover:bg-rose-500/30 rounded text-white text-[11px]"
+            >
+              পুনরায় চেষ্টা করুন
+            </button>
+          </div>
+        )}
+
         {/* KPI Row */}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
           <div className="bg-[#0D0D0D] border border-white/10 p-5 rounded-xl">
@@ -422,14 +524,14 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onExit }) => {
 
           <div className="bg-[#0D0D0D] border border-white/10 p-5 rounded-xl">
             <div className="flex items-center justify-between text-neutral-400 text-xs mb-2">
-              <span>Active IP / Device Locks</span>
+              <span>Active Device Locks</span>
               <Lock className="w-4 h-4 text-neutral-500" />
             </div>
             <div className="text-2xl font-bold font-mono tracking-tight text-white tabular-nums">
               {locks.length}
             </div>
             <div className="text-[11px] text-neutral-500 mt-1 font-mono">
-              Single-SMS enforcement active
+              Per-device lock enforcement
             </div>
           </div>
 
