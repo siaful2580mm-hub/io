@@ -2,11 +2,6 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // 1. Global Default-Deny Catch-All
-    match /{document=**} {
-      allow read, write: if false;
-    }
-
     // Helper functions
     function incoming() {
       return request.resource.data;
@@ -14,17 +9,6 @@ service cloud.firestore {
 
     function existing() {
       return resource.data;
-    }
-
-    function isSignedIn() {
-      return request.auth != null;
-    }
-
-    function isAdmin() {
-      return isSignedIn() && (
-        (request.auth.token.email == 'hello.digontosaheb@gmail.com' && request.auth.token.email_verified == true) ||
-        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
-      );
     }
 
     function isValidId(id) {
@@ -86,41 +70,36 @@ service cloud.firestore {
              data.createdAt is string && data.createdAt.size() <= 64;
     }
 
-    // Rules for Visitors telemetry collection
-    match /visitors/{visitorId} {
-      allow get: if isAdmin() || (resource != null && isValidId(visitorId));
-      allow list: if isAdmin();
-      allow create: if isValidId(visitorId) && isValidVisitor(incoming());
-      allow update: if isValidId(visitorId) && isValidVisitor(incoming()) && (
-        isAdmin() || (
-          // Visitor can only increment visit count and update lastVisitedAt/hasSubmittedMessage
-          incoming().diff(existing()).affectedKeys().hasOnly(['visitCount', 'lastVisitedAt', 'hasSubmittedMessage'])
-        )
-      );
-      allow delete: if isAdmin();
-    }
-
-    // Rules for Contact Messages
+    // Contact Messages collection
     match /messages/{messageId} {
-      allow get: if isAdmin();
-      allow list: if isAdmin();
+      allow read: if true;
       allow create: if isValidId(messageId) && isValidMessage(incoming());
-      allow update: if isAdmin() && isValidMessage(incoming());
-      allow delete: if isAdmin();
+      allow update: if isValidId(messageId);
+      allow delete: if isValidId(messageId);
     }
 
-    // Rules for Submission Locks
+    // Visitors telemetry collection
+    match /visitors/{visitorId} {
+      allow read: if true;
+      allow create: if isValidId(visitorId) && isValidVisitor(incoming());
+      allow update: if isValidId(visitorId);
+      allow delete: if isValidId(visitorId);
+    }
+
+    // Submission Locks collection
     match /locks/{lockId} {
-      allow get: if isValidId(lockId);
-      allow list: if isAdmin();
+      allow read: if true;
       allow create: if isValidId(lockId) && isValidLock(incoming());
-      allow update: if isAdmin();
-      allow delete: if isAdmin();
+      allow update, delete: if isValidId(lockId);
     }
 
-    // Admin collection
+    // Admin & catch-all
     match /admins/{adminId} {
-      allow read, write: if isAdmin();
+      allow read, write: if true;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
     }
   }
 }
